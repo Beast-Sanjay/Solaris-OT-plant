@@ -2,7 +2,7 @@
 
 A containerized **10 MWac / 11.2 MWp** solar photovoltaic *digital twin* with real inter-container API/Modbus communications, 5 Purdue levels (L0–L4), an industrial DMZ, two Samba AD domains, a SOC, three optional Windows/QEMU guests, and a plant operations UI.
 
-**Plant is simulated.** No live solar hardware, grid dispatch connection, real safety assurance, vendor-certified SunSpec mapping, or power-flow/protection accreditation is supplied. The upstream [`mrhOTshOT`](https://github.com/AsherDLL/mrhOTshOT_Docker_pub) annex remains optional and is not part of the solar energy chain.
+**Plant is simulated.** No live solar hardware, grid dispatch connection, real safety assurance, vendor-certified SunSpec mapping, or power-flow/protection accreditation is supplied.
 
 ## Download contents
 
@@ -12,7 +12,7 @@ A containerized **10 MWac / 11.2 MWp** solar photovoltaic *digital twin* with re
 - `services/maintenance_bot.py` — CORP AD-gated historian → automatically generated SQL work orders.
 - `compose.windows.yaml` — 3 optional `dockurr/windows` QEMU/KVM guests, provisioned from **user-supplied** Windows ISOs.
 - `windows-tools/*.ps1` — guest-side Windows file-server, IT reporting, and OT engineering functionality.
-- `docs/topology.png`, `docs/ASSET_ROLES.md`, `docs/DEVICE_MATRIX.md` — architectures, device purposes, interfaces and consequences.
+- [Plant topology diagram](docs/topology.png), `docs/ASSET_ROLES.md`, `docs/DEVICE_MATRIX.md` — architectures, device purposes, interfaces and consequences.
 - `scripts/` and `tests/` — provisioning, validation, test, and live smoke scripts.
 
 ## Deployment requirements
