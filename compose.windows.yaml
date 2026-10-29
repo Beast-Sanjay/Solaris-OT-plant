@@ -1,0 +1,104 @@
+# OPTIONAL: genuine Windows VMs, run inside dockurr/windows QEMU/KVM containers.
+# Base compose.yaml already defines the separate corporate and industrial AD domains.
+# Requires KVM/nested virtualisation, Windows licensing, and local official ISOs.
+# Bring up one VM at a time: ./scripts/windows-up.sh it|server|ot
+# No DOMAIN/USERNAME/PASSWORD here: securely join with the interactive
+# windows-tools/Join-LabDomain.ps1 script after Windows installation.
+# Mounts intentionally avoid Windows guest access to Docker sockets or OT control networks.
+services:
+  win-it:
+    profiles: [windows-it]
+    image: dockurr/windows:latest
+    hostname: win-it-hypervisor
+    environment:
+      VERSION: "11"
+      HOST: SOLAR-IT-WS01
+      USERNAME: solaradmin
+      PASSWORD: ${WINDOWS_IT_PASSWORD:?Run scripts/init_env.py}
+      RAM_SIZE: "4G"
+      CPU_CORES: "2"
+      DISK_SIZE: "64G"
+      AUTOLOGIN: "N"
+      SAMBA: "Y"
+      # Forward Windows guest DNS queries to the corporate Samba AD DNS.
+      DNSMASQ_OPTS: "--no-resolv --server=10.0.0.10"
+    dns: [10.0.0.10]
+    devices: [/dev/kvm, /dev/net/tun]
+    cap_add: [NET_ADMIN]
+    ports:
+      - "127.0.0.1:8006:8006"
+      - "127.0.0.1:33891:3389/tcp"
+    volumes:
+      - ./windows-media/windows11.iso:/custom.iso:ro
+      - ./windows-data/it-workstation:/storage
+      - ./windows-tools:/shared:ro
+    networks:
+      level4:
+        ipv4_address: 10.0.0.40
+    depends_on: [dc01]
+    restart: unless-stopped
+    stop_grace_period: 2m
+
+  win-server:
+    profiles: [windows-server]
+    image: dockurr/windows:latest
+    hostname: win-server-hypervisor
+    environment:
+      VERSION: "2022"
+      HOST: SOLAR-FILE01
+      USERNAME: solaradmin
+      PASSWORD: ${WINDOWS_SERVER_PASSWORD:?Run scripts/init_env.py}
+      RAM_SIZE: "4G"
+      CPU_CORES: "2"
+      DISK_SIZE: "64G"
+      AUTOLOGIN: "N"
+      SAMBA: "Y"
+      DNSMASQ_OPTS: "--no-resolv --server=10.0.0.10"
+    dns: [10.0.0.10]
+    devices: [/dev/kvm, /dev/net/tun]
+    cap_add: [NET_ADMIN]
+    ports:
+      - "127.0.0.1:8007:8006"
+      - "127.0.0.1:33892:3389/tcp"
+    volumes:
+      - ./windows-media/windowsserver2022.iso:/custom.iso:ro
+      - ./windows-data/win-server:/storage
+      - ./windows-tools:/shared:ro
+    networks:
+      level4:
+        ipv4_address: 10.0.0.41
+    depends_on: [dc01]
+    restart: unless-stopped
+    stop_grace_period: 2m
+
+  win-ot:
+    profiles: [windows-ot]
+    image: dockurr/windows:latest
+    hostname: win-ot-hypervisor
+    environment:
+      VERSION: "11"
+      HOST: SOLAR-ENG-WS01
+      USERNAME: solaradmin
+      PASSWORD: ${WINDOWS_OT_PASSWORD:?Run scripts/init_env.py}
+      RAM_SIZE: "4G"
+      CPU_CORES: "2"
+      DISK_SIZE: "64G"
+      AUTOLOGIN: "N"
+      SAMBA: "Y"
+      DNSMASQ_OPTS: "--no-resolv --server=172.18.10.10"
+    dns: [172.18.10.10]
+    devices: [/dev/kvm, /dev/net/tun]
+    cap_add: [NET_ADMIN]
+    ports:
+      - "127.0.0.1:8008:8006"
+      - "127.0.0.1:33893:3389/tcp"
+    volumes:
+      - ./windows-media/windows11.iso:/custom.iso:ro
+      - ./windows-data/ot-engineering:/storage
+      - ./windows-tools:/shared:ro
+    networks:
+      level3:
+        ipv4_address: 172.18.10.40
+    depends_on: [ics-dc01]
+    restart: unless-stopped
+    stop_grace_period: 2m

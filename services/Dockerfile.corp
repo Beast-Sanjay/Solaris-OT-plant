@@ -1,0 +1,6 @@
+FROM python:3.12-slim
+RUN pip install --no-cache-dir 'psycopg[binary]==3.2.3' 'ldap3==2.9.1'
+WORKDIR /app
+COPY services/common.py services/corp_portal.py services/maintenance_bot.py services/public_ops.py /app/
+COPY services/solar_ui/public_ops.html /app/solar_ui/public_ops.html
+CMD ["python", "-u", "/app/corp_portal.py"]

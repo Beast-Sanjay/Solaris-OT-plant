@@ -1,0 +1,1066 @@
+# SOLARIS ONE v7 | Public portal with persistent visitor requests, staff response and sanitized energy statistics
+name: purdue-ot-ad-lab
+x-py:
+  image: python:3.12-slim
+  working_dir: /app
+  volumes: &id001
+  - ./services:/app:ro
+  restart: unless-stopped
+services:
+  attacker:
+    build: ./workstation
+    hostname: attacker
+    profiles:
+    - redteam
+    networks:
+    - wan_sim
+    command:
+    - sleep
+    - infinity
+  web-entry:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes: *id001
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/tcp_relay.py
+    sysctls:
+    - net.ipv4.ip_forward=0
+    environment:
+      TCP_RELAYS: 8080=web-server:80
+    networks:
+    - wan_sim
+    - web_dmz
+  ics-dc01:
+    build: ./ad
+    hostname: ics-dc01
+    environment:
+      AD_REALM: ICS.OTLAB.TEST
+      AD_NETBIOS: ICS
+      AD_HOSTNAME: ics-dc01
+      AD_IP: 172.18.10.10
+      AD_ADMIN_PASSWORD: ${ICS_AD_ADMIN_PASSWORD:?Run scripts/init_env.py}
+      AD_USER: icsoperator
+      AD_USER_PASSWORD: ${ICS_AD_OPERATOR_PASSWORD:?Run scripts/init_env.py}
+    cap_add:
+    - SYS_ADMIN
+    networks:
+      level3:
+        ipv4_address: 172.18.10.10
+    volumes:
+    - ics_ad_lib:/var/lib/samba
+    - ics_ad_etc:/etc/samba
+    - ics_ad_cache:/var/cache/samba
+    restart: unless-stopped
+  historian-conduit:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes: *id001
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/http_relay.py
+    sysctls:
+    - net.ipv4.ip_forward=0
+    environment:
+      LISTEN_PORT: '8080'
+      TARGET_URL: http://historian:8080
+      ALLOWED_PATHS: /api/latest,/api/history,/api/plant/latest,/api/plant/history,/api/devices/latest,/api/devices/history
+      ALLOWED_METHODS: GET
+    networks:
+    - level3
+    - idmz
+  soc-conduit:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes: *id001
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/http_relay.py
+    sysctls:
+    - net.ipv4.ip_forward=0
+    environment:
+      LISTEN_PORT: '8080'
+      TARGET_URL: http://soc-collector:8080
+      ALLOWED_PATHS: /api/events
+      ALLOWED_METHODS: POST
+      CONDUIT_ALLOW_UNAUTH_POST: 'true'
+    networks:
+    - level3
+    - soc
+  jump-server:
+    build: ./jump
+    environment:
+      JUMP_PASSWORD: ${JUMP_PASSWORD:?Run scripts/init_env.py}
+      HISTORIAN_URL: http://historian-conduit:8080
+    networks:
+    - idmz
+    restart: unless-stopped
+  jump-entry:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes: *id001
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/tcp_relay.py
+    sysctls:
+    - net.ipv4.ip_forward=0
+    environment:
+      TCP_RELAYS: 2222=jump-server:22
+    networks:
+    - level4
+    - idmz
+    ports:
+    - 127.0.0.1:2222:2222
+  dc01:
+    build: ./ad
+    hostname: dc01
+    environment:
+      AD_REALM: CORP.OTLAB.TEST
+      AD_NETBIOS: CORP
+      AD_HOSTNAME: dc01
+      AD_IP: 10.0.0.10
+      AD_ADMIN_PASSWORD: ${CORP_AD_ADMIN_PASSWORD:?Run scripts/init_env.py}
+      AD_USER: analyst
+      AD_USER_PASSWORD: ${CORP_AD_ANALYST_PASSWORD:?Run scripts/init_env.py}
+    cap_add:
+    - SYS_ADMIN
+    networks:
+      level4:
+        ipv4_address: 10.0.0.10
+    volumes:
+    - corp_ad_lib:/var/lib/samba
+    - corp_ad_etc:/etc/samba
+    - corp_ad_cache:/var/cache/samba
+    restart: unless-stopped
+  it-workstation:
+    build: ./workstation
+    hostname: it-workstation
+    networks:
+    - level4
+    environment:
+      AD_REALM: CORP.OTLAB.TEST
+      HISTORIAN_URL: http://it-access:8080
+      CORPORATE_URL: http://corp-portal:8080
+    command:
+    - sleep
+    - infinity
+    depends_on:
+    - dc01
+  db01:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: otlab
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Run scripts/init_env.py}
+      POSTGRES_DB: corporate
+    volumes:
+    - postgres_data:/var/lib/postgresql/data
+    - ./db/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+    networks:
+    - level4
+    restart: unless-stopped
+  corp-portal:
+    build:
+      context: .
+      dockerfile: services/Dockerfile.corp
+    environment:
+      DB_HOST: db01
+      DB_USER: otlab
+      DB_PASSWORD: ${DB_PASSWORD:?Run scripts/init_env.py}
+      DB_NAME: corporate
+      PORT: '8080'
+      AD_HOST: dc01
+      AD_DOMAIN: corp.otlab.test
+    networks:
+      level4:
+        ipv4_address: 10.0.0.31
+    depends_on:
+    - db01
+    ports:
+    - 127.0.0.1:18082:8080
+    restart: unless-stopped
+  ca01:
+    build: ./ca
+    hostname: ca01
+    networks:
+    - level4
+    volumes:
+    - ca_data:/data
+    environment:
+      CA_ENROLL_TOKEN: ${CA_ENROLL_TOKEN:?Run scripts/init_env.py}
+    ports:
+    - 127.0.0.1:18083:8080
+    restart: unless-stopped
+  it-access:
+    build:
+      context: .
+      dockerfile: services/Dockerfile.gateway
+    sysctls:
+    - net.ipv4.ip_forward=0
+    environment:
+      AD_HOST: dc01
+      AD_DOMAIN: corp.otlab.test
+      HISTORIAN_URL: http://historian-conduit:8080
+      PORT: '8080'
+    depends_on:
+    - dc01
+    - historian-conduit
+    networks:
+      level4:
+        ipv4_address: 10.0.0.30
+      idmz: {}
+    ports:
+    - 127.0.0.1:18080:8080
+    restart: unless-stopped
+  web-server:
+    image: nginx:1.27-alpine
+    networks:
+    - web_dmz
+    volumes:
+    - ./docs/web/index.html:/usr/share/nginx/html/index.html:ro
+    - ./docs/web/style.css:/usr/share/nginx/html/style.css:ro
+    - ./docs/web/app.js:/usr/share/nginx/html/app.js:ro
+    - ./docs/web/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+    - 127.0.0.1:18081:80
+    restart: unless-stopped
+  soc-collector:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    - soc_data:/data
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/soc.py
+    environment:
+      PORT: '8080'
+      DB_PATH: /data/soc.sqlite3
+      SOC_ELASTIC_URL: http://elastic:9200
+    networks:
+    - soc
+    ports:
+    - 127.0.0.1:19090:8080
+  elastic:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
+    profiles:
+    - elastic
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: 'false'
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    mem_limit: 2g
+    volumes:
+    - elastic_data:/usr/share/elasticsearch/data
+    networks:
+    - soc
+    ports:
+    - 127.0.0.1:19200:9200
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.17.0
+    profiles:
+    - elastic
+    depends_on:
+    - elastic
+    environment:
+      ELASTICSEARCH_HOSTS: http://elastic:9200
+    networks:
+    - soc
+    ports:
+    - 127.0.0.1:15601:5601
+  met-station:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/solar_weather.py
+    networks:
+      level0:
+        ipv4_address: 192.168.96.5
+    environment: {}
+  pv-array-01:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    - pv_01_state:/state
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/solar_array.py
+    networks:
+      level0:
+        ipv4_address: 192.168.96.21
+    environment:
+      ASSET_ID: PV-01
+      STRINGS: '36'
+      DC_KWP: '2800'
+      YIELD_FACTOR: '1.0'
+      WEATHER_URL: http://met-station:8080
+      SOILING_PCT: '0.8'
+      FAILED_STRINGS: '0'
+      CONTROL_TOKEN: ${CONTROL_TOKEN:?Run scripts/init_env.py}
+      STATE_FILE: /state/maintenance.json
+  array-conduit-01:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/http_relay.py
+    networks:
+    - level0
+    - level1
+    environment:
+      LISTEN_PORT: '8080'
+      TARGET_URL: http://pv-array-01:8080
+      ALLOWED_PATHS: /api/state
+      ALLOWED_METHODS: GET
+    sysctls:
+    - net.ipv4.ip_forward=0
+  inverter-01:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/solar_inverter.py
+    networks:
+      level1:
+        ipv4_address: 192.168.95.21
+    environment:
+      ASSET_ID: INV-01
+      ARRAY_ID: PV-01
+      FIELD_URL: http://array-conduit-01:8080
+      AC_KW: '2500'
+      CONTROL_TOKEN: ${CONTROL_TOKEN:?Run scripts/init_env.py}
+  inverter-conduit-01:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/solar_conduit.py
+    networks:
+    - level1
+    - level2
+    environment:
+      TARGET_URL: http://inverter-01:8080
+      TARGET_MODBUS_HOST: inverter-01
+      ALLOWED_PATHS: /api/state,/api/limit
+      ALLOWED_METHODS: GET,POST
+      LISTEN_PORT: '8080'
+      CONDUIT_AUTH_TOKEN: ${CONTROL_TOKEN:?Run scripts/init_env.py}
+      CONDUIT_AUTH_HEADER: X-PPC-Token
+    sysctls:
+    - net.ipv4.ip_forward=0
+  pv-array-02:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    - pv_02_state:/state
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/solar_array.py
+    networks:
+      level0:
+        ipv4_address: 192.168.96.22
+    environment:
+      ASSET_ID: PV-02
+      STRINGS: '36'
+      DC_KWP: '2800'
+      YIELD_FACTOR: '0.99'
+      WEATHER_URL: http://met-station:8080
+      SOILING_PCT: '7.5'
+      FAILED_STRINGS: '0'
+      CONTROL_TOKEN: ${CONTROL_TOKEN:?Run scripts/init_env.py}
+      STATE_FILE: /state/maintenance.json
+  array-conduit-02:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/http_relay.py
+    networks:
+    - level0
+    - level1
+    environment:
+      LISTEN_PORT: '8080'
+      TARGET_URL: http://pv-array-02:8080
+      ALLOWED_PATHS: /api/state
+      ALLOWED_METHODS: GET
+    sysctls:
+    - net.ipv4.ip_forward=0
+  inverter-02:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/solar_inverter.py
+    networks:
+      level1:
+        ipv4_address: 192.168.95.22
+    environment:
+      ASSET_ID: INV-02
+      ARRAY_ID: PV-02
+      FIELD_URL: http://array-conduit-02:8080
+      AC_KW: '2500'
+      CONTROL_TOKEN: ${CONTROL_TOKEN:?Run scripts/init_env.py}
+  inverter-conduit-02:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/solar_conduit.py
+    networks:
+    - level1
+    - level2
+    environment:
+      TARGET_URL: http://inverter-02:8080
+      TARGET_MODBUS_HOST: inverter-02
+      ALLOWED_PATHS: /api/state,/api/limit
+      ALLOWED_METHODS: GET,POST
+      LISTEN_PORT: '8080'
+      CONDUIT_AUTH_TOKEN: ${CONTROL_TOKEN:?Run scripts/init_env.py}
+      CONDUIT_AUTH_HEADER: X-PPC-Token
+    sysctls:
+    - net.ipv4.ip_forward=0
+  pv-array-03:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    - pv_03_state:/state
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/solar_array.py
+    networks:
+      level0:
+        ipv4_address: 192.168.96.23
+    environment:
+      ASSET_ID: PV-03
+      STRINGS: '36'
+      DC_KWP: '2800'
+      YIELD_FACTOR: '0.98'
+      WEATHER_URL: http://met-station:8080
+      SOILING_PCT: '1.5'
+      FAILED_STRINGS: '2'
+      CONTROL_TOKEN: ${CONTROL_TOKEN:?Run scripts/init_env.py}
+      STATE_FILE: /state/maintenance.json
+  array-conduit-03:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/http_relay.py
+    networks:
+    - level0
+    - level1
+    environment:
+      LISTEN_PORT: '8080'
+      TARGET_URL: http://pv-array-03:8080
+      ALLOWED_PATHS: /api/state
+      ALLOWED_METHODS: GET
+    sysctls:
+    - net.ipv4.ip_forward=0
+  inverter-03:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/solar_inverter.py
+    networks:
+      level1:
+        ipv4_address: 192.168.95.23
+    environment:
+      ASSET_ID: INV-03
+      ARRAY_ID: PV-03
+      FIELD_URL: http://array-conduit-03:8080
+      AC_KW: '2500'
+      CONTROL_TOKEN: ${CONTROL_TOKEN:?Run scripts/init_env.py}
+  inverter-conduit-03:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/solar_conduit.py
+    networks:
+    - level1
+    - level2
+    environment:
+      TARGET_URL: http://inverter-03:8080
+      TARGET_MODBUS_HOST: inverter-03
+      ALLOWED_PATHS: /api/state,/api/limit
+      ALLOWED_METHODS: GET,POST
+      LISTEN_PORT: '8080'
+      CONDUIT_AUTH_TOKEN: ${CONTROL_TOKEN:?Run scripts/init_env.py}
+      CONDUIT_AUTH_HEADER: X-PPC-Token
+    sysctls:
+    - net.ipv4.ip_forward=0
+  pv-array-04:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    - pv_04_state:/state
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/solar_array.py
+    networks:
+      level0:
+        ipv4_address: 192.168.96.24
+    environment:
+      ASSET_ID: PV-04
+      STRINGS: '36'
+      DC_KWP: '2800'
+      YIELD_FACTOR: '0.97'
+      WEATHER_URL: http://met-station:8080
+      SOILING_PCT: '3'
+      FAILED_STRINGS: '0'
+      CONTROL_TOKEN: ${CONTROL_TOKEN:?Run scripts/init_env.py}
+      STATE_FILE: /state/maintenance.json
+  array-conduit-04:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/http_relay.py
+    networks:
+    - level0
+    - level1
+    environment:
+      LISTEN_PORT: '8080'
+      TARGET_URL: http://pv-array-04:8080
+      ALLOWED_PATHS: /api/state
+      ALLOWED_METHODS: GET
+    sysctls:
+    - net.ipv4.ip_forward=0
+  inverter-04:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/solar_inverter.py
+    networks:
+      level1:
+        ipv4_address: 192.168.95.24
+    environment:
+      ASSET_ID: INV-04
+      ARRAY_ID: PV-04
+      FIELD_URL: http://array-conduit-04:8080
+      AC_KW: '2500'
+      CONTROL_TOKEN: ${CONTROL_TOKEN:?Run scripts/init_env.py}
+  inverter-conduit-04:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/solar_conduit.py
+    networks:
+    - level1
+    - level2
+    environment:
+      TARGET_URL: http://inverter-04:8080
+      TARGET_MODBUS_HOST: inverter-04
+      ALLOWED_PATHS: /api/state,/api/limit
+      ALLOWED_METHODS: GET,POST
+      LISTEN_PORT: '8080'
+      CONDUIT_AUTH_TOKEN: ${CONTROL_TOKEN:?Run scripts/init_env.py}
+      CONDUIT_AUTH_HEADER: X-PPC-Token
+    sysctls:
+    - net.ipv4.ip_forward=0
+  feeder-33kv:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/solar_feeder.py
+    networks:
+      level1:
+        ipv4_address: 192.168.95.80
+    environment:
+      CONTROL_TOKEN: ${CONTROL_TOKEN:?Run scripts/init_env.py}
+      TRANSFORMER_URL: http://transformer-33kv:8080
+  feeder-conduit:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/http_relay.py
+    networks:
+    - level1
+    - level2
+    environment:
+      LISTEN_PORT: '8080'
+      TARGET_URL: http://feeder-33kv:8080
+      ALLOWED_PATHS: /api/state,/api/breaker
+      ALLOWED_METHODS: GET,POST
+      CONDUIT_AUTH_TOKEN: ${CONTROL_TOKEN:?Run scripts/init_env.py}
+      CONDUIT_AUTH_HEADER: X-PPC-Token
+    sysctls:
+    - net.ipv4.ip_forward=0
+  ppc-01:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/solar_ppc.py
+    networks:
+      level2:
+        ipv4_address: 172.18.20.25
+    environment:
+      CONTROL_TOKEN: ${CONTROL_TOKEN:?Run scripts/init_env.py}
+      TRANSFORMER_URL: http://transformer-conduit:8080
+      RELAY_URL: http://relay-conduit:8080
+      GRID_URL: http://grid-conduit:8080
+  scada:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/solar_scada.py
+    networks:
+      level2:
+        ipv4_address: 172.18.20.30
+    environment:
+      CONTROL_TOKEN: ${CONTROL_TOKEN:?Run scripts/init_env.py}
+    ports:
+    - 127.0.0.1:1882:8080
+  supervisory-conduit:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/http_relay.py
+    networks:
+    - level2
+    - level3
+    environment:
+      LISTEN_PORT: '8080'
+      TARGET_URL: http://scada:8080
+      ALLOWED_PATHS: /api/state
+      ALLOWED_METHODS: GET
+    sysctls:
+    - net.ipv4.ip_forward=0
+  historian:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    - historian_data:/data
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/solar_historian.py
+    networks:
+    - level3
+    environment:
+      POLL_URL: http://supervisory-conduit:8080/api/state
+      SOC_URL: http://soc-conduit:8080/api/events
+      DB_PATH: /data/solar_historian.sqlite3
+      PORT: '8080'
+  ot-scada-read:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/http_relay.py
+    environment:
+      LISTEN_PORT: '8080'
+      TARGET_URL: http://scada:8080
+      ALLOWED_PATHS: /,/index.html,/api/state
+      ALLOWED_METHODS: GET
+    sysctls:
+    - net.ipv4.ip_forward=0
+    networks:
+      level3:
+        ipv4_address: 172.18.10.31
+      level2: {}
+    depends_on:
+    - scada
+  transformer-33kv:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/solar_transformer.py
+    networks:
+      level1:
+        ipv4_address: 192.168.95.81
+    environment:
+      CONTROL_TOKEN: ${CONTROL_TOKEN:?Run scripts/init_env.py}
+  transformer-conduit:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/http_relay.py
+    networks:
+    - level1
+    - level2
+    environment:
+      LISTEN_PORT: '8080'
+      TARGET_URL: http://transformer-33kv:8080
+      ALLOWED_PATHS: /api/state,/api/input
+      ALLOWED_METHODS: GET,POST
+      CONDUIT_AUTH_TOKEN: ${CONTROL_TOKEN:?Run scripts/init_env.py}
+      CONDUIT_AUTH_HEADER: X-PPC-Token
+    sysctls:
+    - net.ipv4.ip_forward=0
+  protection-relay:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/solar_relay.py
+    networks:
+      level1:
+        ipv4_address: 192.168.95.82
+    environment:
+      FEEDER_URL: http://feeder-33kv:8080
+      TRANSFORMER_URL: http://transformer-33kv:8080
+      CONTROL_TOKEN: ${CONTROL_TOKEN:?Run scripts/init_env.py}
+  relay-conduit:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/http_relay.py
+    networks:
+    - level1
+    - level2
+    environment:
+      LISTEN_PORT: '8080'
+      TARGET_URL: http://protection-relay:8080
+      ALLOWED_PATHS: /api/state,/api/test/trip,/api/reset-trip
+      ALLOWED_METHODS: GET,POST
+      CONDUIT_AUTH_TOKEN: ${CONTROL_TOKEN:?Run scripts/init_env.py}
+      CONDUIT_AUTH_HEADER: X-PPC-Token
+    sysctls:
+    - net.ipv4.ip_forward=0
+  grid-dispatch:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/solar_grid_dispatch.py
+    networks:
+      level3:
+        ipv4_address: 172.18.10.55
+    environment:
+      CONTROL_TOKEN: ${CONTROL_TOKEN:?Run scripts/init_env.py}
+    ports:
+    - 127.0.0.1:1883:8080
+  grid-conduit:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/http_relay.py
+    networks:
+    - level3
+    - level2
+    environment:
+      LISTEN_PORT: '8080'
+      TARGET_URL: http://grid-dispatch:8080
+      ALLOWED_PATHS: /api/state
+      ALLOWED_METHODS: GET
+    sysctls:
+    - net.ipv4.ip_forward=0
+  maintenance-bot:
+    build:
+      context: .
+      dockerfile: services/Dockerfile.corp
+    command:
+    - python
+    - -u
+    - /app/maintenance_bot.py
+    hostname: maintenance-bot
+    environment:
+      AD_USER: analyst
+      AD_PASSWORD: ${CORP_AD_ANALYST_PASSWORD:?Run scripts/init_env.py}
+      DB_HOST: db01
+      DB_PASSWORD: ${DB_PASSWORD:?Run scripts/init_env.py}
+      HISTORIAN_URL: http://it-access:8080/api/devices/latest
+    networks:
+    - level4
+    depends_on:
+    - db01
+    - it-access
+    restart: unless-stopped
+  field-service:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    - field_service_data:/data
+    command:
+    - python
+    - -u
+    - /app/solar_field_service.py
+    restart: unless-stopped
+    environment:
+      CONTROL_TOKEN: ${CONTROL_TOKEN:?Run scripts/init_env.py}
+      FIELD_DB: /data/service_log.sqlite3
+      PORT: '8080'
+    networks:
+    - level0
+    ports:
+    - 127.0.0.1:19002:8080
+  public-publisher:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    - public_portal_data:/data
+    restart: unless-stopped
+    command:
+    - python
+    - -u
+    - /app/solar_public.py
+    environment:
+      HISTORIAN_URL: http://historian-conduit:8080
+      PUBLIC_POLL_SECONDS: '30'
+      PUBLIC_DB: /data/public.sqlite3
+      PUBLIC_ADMIN_TOKEN: ${PUBLIC_ADMIN_TOKEN:?Run scripts/init_env.py}
+      PUBLIC_SALT: ${PUBLIC_SALT:?Run scripts/init_env.py}
+    networks:
+    - idmz
+    - web_dmz
+    sysctls:
+    - net.ipv4.ip_forward=0
+  public-case-conduit:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+    - ./services:/app:ro
+    command:
+    - python
+    - -u
+    - /app/http_relay.py
+    restart: unless-stopped
+    environment:
+      LISTEN_PORT: '8080'
+      TARGET_URL: http://public-publisher:8080
+      ALLOWED_PATHS: /api/internal/enquiries,/api/internal/enquiries/update,/api/internal/announcements,/api/internal/announcements/close,/api/public/notices
+      ALLOWED_METHODS: GET,POST
+      CONDUIT_AUTH_TOKEN: ${PUBLIC_ADMIN_TOKEN:?Run scripts/init_env.py}
+      CONDUIT_AUTH_HEADER: X-Public-Admin-Token
+      CONDUIT_REQUIRE_AUTH_GET: 'true'
+      CONDUIT_MAX_RESPONSE_BYTES: '300000'
+    networks:
+    - web_dmz
+    - idmz
+    sysctls:
+    - net.ipv4.ip_forward=0
+  public-ops:
+    build:
+      context: .
+      dockerfile: services/Dockerfile.corp
+    command:
+    - python
+    - -u
+    - /app/public_ops.py
+    environment:
+      AD_HOST: dc01
+      AD_DOMAIN: corp.otlab.test
+      PUBLIC_OPS_URL: http://public-case-conduit:8080
+      PUBLIC_ADMIN_TOKEN: ${PUBLIC_ADMIN_TOKEN:?Run scripts/init_env.py}
+      PORT: '8080'
+    depends_on:
+    - dc01
+    - public-case-conduit
+    networks:
+    - level4
+    - idmz
+    ports:
+    - 127.0.0.1:18085:8080
+    restart: unless-stopped
+networks:
+  wan_sim:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+      - subnet: 198.18.0.0/24
+  level4:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+      - subnet: 10.0.0.0/24
+  web_dmz:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+      - subnet: 10.6.6.0/24
+  idmz:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+      - subnet: 10.7.7.0/24
+  level3:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+      - subnet: 172.18.10.0/24
+  level2:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+      - subnet: 172.18.20.0/24
+  level1:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+      - subnet: 192.168.95.0/24
+  level0:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+      - subnet: 192.168.96.0/24
+  soc:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+      - subnet: 192.168.200.0/24
+volumes:
+  corp_ad_lib: {}
+  corp_ad_etc: {}
+  corp_ad_cache: {}
+  ics_ad_lib: {}
+  ics_ad_etc: {}
+  ics_ad_cache: {}
+  historian_data: {}
+  soc_data: {}
+  ca_data: {}
+  postgres_data: {}
+  elastic_data: {}
+  field_service_data: {}
+  pv_01_state: {}
+  pv_02_state: {}
+  pv_03_state: {}
+  pv_04_state: {}
+  public_portal_data: {}

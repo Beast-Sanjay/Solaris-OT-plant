@@ -1,0 +1,5 @@
+#!/bin/sh
+# Query read-only L3 historian from an SSH session inside the industrial DMZ.
+set -eu
+curl --fail --silent --show-error "${HISTORIAN_URL:-http://historian-conduit:8080}/api/devices/latest"
+printf '\n'
