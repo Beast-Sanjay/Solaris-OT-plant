@@ -8,7 +8,7 @@ from http.server import ThreadingHTTPServer
 from common import JSONHandler, read_json, send_json
 
 lock = threading.Lock()
-state = {'level': float(os.getenv('INITIAL_LEVEL', '44')), 'pump': False, 'temperature': 27.0, 'flow': 0.0, 'tick': time.time()}
+state = {'level': 44.0, 'pump': False, 'temperature': 27.0, 'flow': 0.0, 'tick': time.time()}
 
 
 def evolve():
@@ -19,8 +19,8 @@ def evolve():
             dt = min(3, now - state['tick'])
             state['tick'] = now
             # Tank fills when pump runs and drains steadily into process output.
-            state['level'] = max(0, min(100, state['level'] + dt * (float(os.getenv('FILL_RATE', '0.75')) if state['pump'] else -float(os.getenv('DRAIN_RATE', '0.22')))))
-            state['flow'] = round(float(os.getenv('PUMP_FLOW', '12.5')) if state['pump'] else 0.0, 2)
+            state['level'] = max(0, min(100, state['level'] + dt * (0.75 if state['pump'] else -0.22)))
+            state['flow'] = round(12.5 if state['pump'] else 0.0, 2)
             state['temperature'] = round(27 + 1.8 * math.sin(now / 80), 2)
 
 

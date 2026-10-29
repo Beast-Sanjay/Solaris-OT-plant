@@ -1,7 +1,7 @@
 FROM debian:bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    samba-ad-dc samba-ad-provision samba-common-bin smbclient krb5-user dnsutils ldap-utils acl attr ca-certificates \
+    samba samba-common-bin smbclient krb5-user dnsutils ldap-utils acl attr ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY start.sh /usr/local/bin/start-ad
 RUN chmod 755 /usr/local/bin/start-ad

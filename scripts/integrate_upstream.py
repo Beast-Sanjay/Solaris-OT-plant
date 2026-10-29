@@ -38,24 +38,12 @@ def build(source):
         if name == 'fuxa':
             # Loopback-only UI access. HMI seeds using upstream seed script.
             entry['ports'] = ['127.0.0.1:1881:1881']
-        if name in ('plc-heating', 'plc-power'):
+        if name == 'plc-heating':
             # L1 DNS alias differs from FUXA's required L2 hostname. The L2 alias
             # 'plc-heating' belongs only to the TCP conduit.
-            entry['networks'] = {'level1': {'aliases': [name + '-l1']}}
+            entry['networks'] = {'level1': {'aliases': ['plc-heating-l1']}}
         generated[name] = entry
     generated['sis']['depends_on'] = ['plc-water']
-    # Optional legacy Modbus-to-FUXA bridge, only installed with upstream overlay.
-    # Does NOT connect to the solar PPC; original fleet represents independent demo systems.
-    generated['control-conduit'] = {
-        'image': 'python:3.12-slim',
-        'working_dir': '/app',
-        'volumes': ['./services:/app:ro'],
-        'command': ['python', '-u', '/app/tcp_relay.py'],
-        'environment': {'TCP_RELAYS': '502=plc-heating-l1:502,15022=plc-power-l1:502'},
-        'sysctls': ['net.ipv4.ip_forward=0'],
-        'networks': {'level1': {}, 'level2': {'aliases': ['plc-heating', 'plc-power']}},
-        'restart': 'unless-stopped'
-    }
     # Original FUXA named volume is fully managed here, no host paths inherited.
     return {'services': generated, 'volumes': {'fuxa_data': {}}}
 

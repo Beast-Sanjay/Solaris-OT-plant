@@ -15,12 +15,11 @@ class IntegrationTests(unittest.TestCase):
                                  'build': {'context': '..', 'dockerfile':'docker/Dockerfile'}}
                           for name in m.PLC_NAMES+('fuxa',)}}
         generated=m.build(src)['services']
-        self.assertEqual(len(generated), 14)
+        self.assertEqual(len(generated), 13)
         self.assertEqual(generated['plc-water']['networks'],['level1'])
         self.assertEqual(generated['fuxa']['networks'],['level2'])
         self.assertNotIn('ports',generated['plc-heating'])
         self.assertEqual(generated['plc-heating']['networks']['level1']['aliases'], ['plc-heating-l1'])
-        self.assertEqual(generated['plc-power']['networks']['level1']['aliases'], ['plc-power-l1'])
         self.assertEqual(generated['fuxa']['ports'],['127.0.0.1:1881:1881'])
         self.assertEqual(generated['sis']['depends_on'],['plc-water'])
 

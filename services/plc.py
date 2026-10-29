@@ -8,7 +8,7 @@ import time
 from urllib.request import Request, urlopen
 
 lock = threading.Lock()
-state = {'level': 44.0, 'flow': 0.0, 'temp': 27.0, 'pump': False, 'setpoint': int(os.getenv('INITIAL_SETPOINT', '55')), 'connected': False}
+state = {'level': 44.0, 'flow': 0.0, 'temp': 27.0, 'pump': False, 'setpoint': 55, 'connected': False}
 URL = os.getenv('FIELD_URL', 'http://field-conduit:8080')
 
 
@@ -95,5 +95,5 @@ class Server(socketserver.ThreadingTCPServer):
 
 if __name__ == '__main__':
     threading.Thread(target=controller, daemon=True).start()
-    print(f"{os.getenv('PLC_NAME','plc-demo')} Modbus TCP on {os.getenv('MODBUS_PORT','15020')}; registers 0..5, setpoint register 4", flush=True)
+    print('L1 PLC Modbus TCP on 15020; registers 0..5, setpoint register 4', flush=True)
     Server(('0.0.0.0', int(os.getenv('MODBUS_PORT', '15020'))), ModbusHandler).serve_forever()

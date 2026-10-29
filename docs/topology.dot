@@ -1,97 +1,23 @@
-digraph SolarPurdue {
-  graph [bgcolor="#0b1320",fontname="Arial",pad=0.5,ranksep=0.9,nodesep=.45,splines=polyline,label="SOLARIS ONE  |  10 MWac Solar PV Cyber Range\nFive Purdue levels + IDMZ + web DMZ + SOC  /  Operational v7",labelloc=t,fontcolor="#edf5f6",fontsize=24];
-  node [shape=box,style="rounded,filled",fillcolor="#15283a",color="#416070",fontcolor="#e0eef2",fontname="Arial",fontsize=11,margin=".18,.13"];
-  edge [color="#71dcc1",penwidth=1.8,arrowsize=.75,fontcolor="#b1c8d4",fontname="Arial",fontsize=9];
-  subgraph cluster_l0 {label="LEVEL 0  •  Physical Process  |  192.168.96.0/24";style="rounded";color="#527158";fontcolor="#d8f58d";
-    met [label="MET-01\nWeather station"];
-    pv [label="PV-01 to PV-04\n4 x 2.8 MWp arrays\n36 strings each"];
-    met->pv [label="Irradiance + temperature"];
-    fieldtech [label="L0 field technician
-Repair / clean / fault inject
-Audit log · port 19002",fillcolor="#28483b"];
-    fieldtech->pv [label="Local servicing",color="#f2d480"];
-  }
-  subgraph cluster_l1 {label="LEVEL 1  •  Basic Control  |  192.168.95.0/24";style="rounded";color="#597452";fontcolor="#d8f58d";
-    arraybridge [label="Four L0/L1\nread-only conduits",fillcolor="#28353b"];
-    inverters [label="INV-01 to INV-04\n4 x 2.5 MWac\nModbus TCP + setpoints"];
-    feeder [label="FDR-33KV-01\nBreaker + export meter"];
-    transformer [label="TX-33KV-01\n0.69 / 33 kV transformer\nLosses + winding temperature"];
-    relay [label="REL-33KV-01\nIndependent protection relay\nTrip latch / reset"];
-  }
-  subgraph cluster_l2 {label="LEVEL 2  •  Supervisory  |  172.18.20.0/24";style="rounded";color="#3e8291";fontcolor="#97eae4";
-    invbridge [label="4 x inverter conduits\nModbus + control",fillcolor="#21383e"];
-    ppc [label="PPC-01\nActive power dispatch\nBreaker supervision"];
-    scada [label="SCADA-01\nSolar dashboard / operator UI\nhttp://127.0.0.1:1882"];
-    feederbridge [label="Feeder conduit\nHTTP allowlist",fillcolor="#21383e"];
-  }
-  subgraph cluster_l3 {label="LEVEL 3  •  OT Operations  |  172.18.10.0/24";style="rounded";color="#477393";fontcolor="#9fd3f9";
-    supbridge [label="Read-only SCADA conduit",fillcolor="#28353b"];
-    hist [label="Solar historian\nSQLite time series / 15 assets"];
-    gridorder [label="GRID-ORDER-01\nGrid dispatch web portal\nOrder sets PPC export ceiling"];
-    icsdc [label="ICS-DC01\nICS.OTLAB.TEST\nIndependent Samba AD"];
-    otwin [label="Windows 11 OT Engineering\n(Optional dockur/windows)\nDomain-joined ICS",fillcolor="#233d53"];
-    otview [label="Read-only SCADA viewer\n172.18.10.31",fillcolor="#233d53"];
-    icsdc->otwin [label="AD / Kerberos",style=dashed];
-  }
-  subgraph cluster_idmz {label="LEVEL 3.5  •  Industrial DMZ  |  10.7.7.0/24";style="rounded";color="#a37c43";fontcolor="#f7d18a";
-    historybridge [label="Historian read-only gateway"];
-    publiccase [label="Public-case conduit\nToken gated GET / POST\nStrict route allowlist",fillcolor="#4b4935"];
-    publicpub [label="Public publisher (DMZ bridge)
-Public data + protected cases
-30 s cache + SQLite",fillcolor="#445034"];
-    jump [label="SSH jump server"];
-  }
-  subgraph cluster_l4 {label="LEVEL 4  •  Enterprise IT  |  10.0.0.0/24";style="rounded";color="#7861a4";fontcolor="#e0cafa";
-    dc [label="DC01\nCORP.OTLAB.TEST"];
-    gateway [label="AD-validated\nHistorian access"];
-    it [label="Linux IT tool container"];
-    win_it [label="Windows 11 IT\n(Optional dockur/windows)\nDomain-joined CORP",fillcolor="#383252"];
-    win_server [label="Windows Server 2022\n(Optional dockur/windows)\nCORP member server",fillcolor="#383252"];
-    dc->win_it [style=dashed,label="AD logon"];
-    dc->win_server [style=dashed,label="AD logon"];
-    win_it->gateway [style=dashed,label="GET history"];
-    db [label="DB01 + Corporate Portal\nAD approvals / closure + audit"];
-    publicops [label="Public service desk\nCorporate AD sign-in\nCase response + notices\nlocalhost:18085",fillcolor="#44405d"];
-    ca [label="CA01 certificates"];
-    bot [label="MAINT-BOT-01\nAD-authenticated readings\nAutomatic work orders"];
-    win_server->db [style=dashed,label="Reports / SMB"] ;
-    dc->gateway [label="LDAPS auth"];
-    it->gateway [label="Authenticated history"];
-    it->db [style=dashed,color="#9c87b9"];
-  }
-  subgraph cluster_web {label="WEB DMZ  |  10.6.6.0/24";style="rounded";color="#719458";fontcolor="#d0f57c";
-    publicweb [label="Nginx public solar website\nLive energy analytics + notices\nEnquiries / private tracking\nlocalhost:18081",fillcolor="#2d4938"];
-  }
-  subgraph cluster_soc {label="SOC  |  192.168.200.0/24";style="rounded";color="#9b5870";fontcolor="#f2a6bc";
-    soc [label="SOC Collector\nProcess events"];
-  }
-  // Inter-zone arrows outside the subgraph definitions to preserve node membership.
-  pv->arraybridge -> inverters [label="DC / measurements"];
-  inverters->invbridge->ppc [label="Modbus telemetry"];
-  ppc->invbridge [label="Power limit",color="#ebc77a",constraint=false];
-  ppc->transformer [label="AC plant dispatch / estimated bus supply",color="#ebc77a"];
-  transformer->feeder [label="Stepped-up output",color="#e6cf73"];
-  relay->feeder [label="Trip / inhibit close",color="#fb8497"];
-  feeder->relay [label="Current / voltage / breaker",style=dashed];
-  transformer->relay [label="Winding temperature",style=dashed];
-  gridorder->ppc [label="Grid order / export ceiling",style=dashed];
-  ppc->feederbridge [label="Breaker command",color="#ebc77a"];
-  feederbridge->feeder [color="#ebc77a"];
-  gateway->bot [label="AD-gated read",style=dashed];
-  bot->db [label="Fault work orders"];
-  feeder->feederbridge [label="PCC meter"];
-  ppc->scada [label="Plant state"];
-  scada->ppc [label="Operator dispatch",color="#ebc77a",constraint=false];
-  scada->supbridge->hist [label="3 s samples"];
-  scada->otview [label="GET only",style=dashed];
-  otview->otwin [style=dashed,label="Monitor only"];
-  hist->historybridge [label="Allowed GET only"];
-  historybridge->publicpub [label="Filtered GET",style=dashed,color="#d5ef88"];
-  publicpub->publicweb [label="Filtered energy and notices",color="#d5ef88"];
-  publicweb->publicpub [label="Submit / track cases",color="#f2d480",constraint=false];
-  publicpub->publiccase [label="Protected case API",dir=both,color="#f2d480"];
-  publiccase->publicops [label="DMZ review conduit",dir=both,color="#f2d480"];
-  dc->publicops [label="LDAP auth",style=dashed];
-  gateway->historybridge [label="GET only"];
-  hist->soc [label="Warnings / offline",color="#de829d"];
+digraph PurdueLab {
+  graph [fontname="DejaVu Sans", bgcolor="white", label="Purdue OT + Active Directory Lab | strict conduits", labelloc=t, fontsize=21, ranksep=0.55, nodesep=0.3, splines=ortho];
+  node [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=11, color="#d6d6e3", fillcolor="#f5f4fa"];
+  edge [color="#625d9e", arrowsize=0.7, fontname="DejaVu Sans", fontsize=9];
+  l4 [label="L4 ENTERPRISE IT\n10.0.0.0/24\nDC01 (CORP AD) | CA01 | DB01 | IT WS", fillcolor="#ede5ff"];
+  wan [label="WAN simulation\n198.18.0.0/24\nOptional attacker terminal", fillcolor="#eee1e1"];
+  web [label="WEB DMZ\n10.6.6.0/24\nNginx (isolated)", fillcolor="#f2f4fa"];
+  idmz [label="L3.5 INDUSTRIAL DMZ\n10.7.7.0/24\nJump host | AD-check gate | app relays", fillcolor="#ffe7d8"];
+  l3 [label="L3 OPERATIONS\n172.18.10.0/24\nHistorian | ICS-DC01 (separate OT AD)", fillcolor="#e7f4fb"];
+  l2 [label="L2 SUPERVISORY\n172.18.20.0/24\nSCADA | FUXA HMI", fillcolor="#e6f5e8"];
+  l1 [label="L1 CONTROL\n192.168.95.0/24\n11 upstream protocol targets | SIS | PLC demo", fillcolor="#fff2cc"];
+  l0 [label="L0 PHYSICAL PROCESS\n192.168.96.0/24\nTank | Pump | Temperature/Flow", fillcolor="#ffe7e7"];
+  soc [label="SOC\n192.168.200.0/24\nEvent collector | optional Elastic/Kibana", fillcolor="#e5eefa"];
+  {rank=same; web; l4; soc;}
+  l4 -> idmz [label="AD-authenticated query"];
+  idmz -> l3 [label="historian read-only"];
+  l3 -> l2 [label="SCADA read-only"];
+  l2 -> l1 [label="Modbus permitted"];
+  l1 -> l0 [label="field I/O"];
+  l3 -> soc [label="SOC events"];
+  wan -> web [label="HTTP allowlisted"];
+  web -> l4 [style=invis];
 }

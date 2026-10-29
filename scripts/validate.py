@@ -1,75 +1,55 @@
 #!/usr/bin/env python3
-"""Check solar communication conduits, zone segmentation and Compose configuration."""
+"""Non-Docker static assertions for topology and generated integration."""
 from pathlib import Path
 from ipaddress import ip_network
+import sys
 import yaml
-root=Path(__file__).resolve().parents[1]
-files=[root/'compose.yaml']
-if (root/'compose.mrhotshot.yaml').exists():files.append(root/'compose.mrhotshot.yaml')
-services={};networks={}
-for p in files:
-    obj=yaml.safe_load(p.read_text())
-    for name,service in obj['services'].items():
-        assert name not in services,f'duplicate {name}'
-        services[name]=service
-    networks.update(obj.get('networks',{}))
-zones={'level0','level1','level2','level3','idmz','level4','soc','web_dmz','wan_sim'}
-assert zones.issubset(networks)
-subnets=[ip_network(networks[name]['ipam']['config'][0]['subnet']) for name in zones]
-for i,a in enumerate(subnets):
-    for b in subnets[i+1:]:assert not a.overlaps(b),(a,b)
-assert all(networks[z].get('internal',False) for z in zones)
-required={'transformer-33kv','transformer-conduit','protection-relay','relay-conduit','grid-dispatch','grid-conduit','maintenance-bot','field-service','public-publisher','met-station','ppc-01','feeder-33kv','scada','historian','dc01','ics-dc01','db01','ca01','corp-portal','jump-server','it-access'}
-for i in range(1,5):
-    n=f'{i:02d}'
-    required.update([f'pv-array-{n}',f'array-conduit-{n}',f'inverter-{n}',f'inverter-conduit-{n}'])
-assert required.issubset(services),required-set(services)
-allowed={'ot-scada-read','supervisory-conduit','historian-conduit','soc-conduit','jump-entry','it-access','web-entry','feeder-conduit','transformer-conduit','relay-conduit','grid-conduit','control-conduit','public-publisher','public-ops','public-case-conduit'}
-allowed.update(f'array-conduit-{i:02d}' for i in range(1,5))
-allowed.update(f'inverter-conduit-{i:02d}' for i in range(1,5))
-for name,service in services.items():
-    ns=service.get('networks',[]);ns=set(ns if isinstance(ns,list) else ns.keys())
-    assert ns,f'{name} no network'
-    assert len(ns)<=1 or name in allowed,(name,ns)
-    assert 'otlab' not in ns,name
-    assert not (('level4' in ns) and ('level1' in ns or 'level3' in ns)),name
-    assert '/var/run/docker.sock' not in str(service),name
-    for p in service.get('ports',[]) or []:assert str(p).startswith('127.0.0.1:'),(name,p)
-for i in range(1,5):
-    n=f'{i:02d}'
-    assert services[f'pv-array-{n}']['networks'].keys()=={'level0'}
-    assert services[f'inverter-{n}']['networks'].keys()=={'level1'}
-    assert set(services[f'array-conduit-{n}']['networks'])=={'level0','level1'}
-    assert set(services[f'inverter-conduit-{n}']['networks'])=={'level1','level2'}
-assert services['scada']['networks'].keys()=={'level2'}
-assert services['ppc-01']['networks'].keys()=={'level2'}
-assert services['feeder-33kv']['networks'].keys()=={'level1'}
-assert services['transformer-33kv']['networks'].keys()=={'level1'}
-assert services['protection-relay']['networks'].keys()=={'level1'}
-assert services['grid-dispatch']['networks'].keys()=={'level3'}
-assert services['maintenance-bot']['networks']==['level4']
-assert services['grid-conduit']['environment']['ALLOWED_METHODS']=='GET'
-assert services['feeder-33kv']['environment']['TRANSFORMER_URL']=='http://transformer-33kv:8080'
-assert set(services['supervisory-conduit']['networks'])=={'level2','level3'}
-assert services['dc01']['networks']['level4']['ipv4_address']=='10.0.0.10'
-assert services['ics-dc01']['networks']['level3']['ipv4_address']=='172.18.10.10'
-assert services['historian-conduit']['environment']['ALLOWED_METHODS']=='GET'
-assert set(services['public-publisher']['networks'])=={'idmz','web_dmz'}
-assert services['web-server']['networks']==['web_dmz']
-assert set(services['public-case-conduit']['networks'])=={'idmz','web_dmz'}
-assert set(services['public-ops']['networks'])=={'level4','idmz'}
-assert services['public-case-conduit']['environment']['CONDUIT_REQUIRE_AUTH_GET']=='true'
-assert services['public-case-conduit']['environment']['ALLOWED_PATHS'].find('/api/control')<0
-assert services['field-service']['networks']==['level0']
-assert '/api/public' not in services['historian-conduit']['environment']['ALLOWED_PATHS']
-for name in [*(f'inverter-conduit-{i:02d}' for i in range(1,5)), 'transformer-conduit','feeder-conduit','relay-conduit']:
-    assert services[name]['environment']['CONDUIT_AUTH_HEADER']=='X-PPC-Token'
-    assert services[name]['environment']['CONDUIT_AUTH_TOKEN']
-for i in range(1,5):
-    assert services[f'pv-array-{i:02d}']['environment']['STATE_FILE']=='/state/maintenance.json'
 
+ROOT = Path(__file__).resolve().parents[1]
+files = [ROOT / 'compose.yaml']
+if (ROOT / 'compose.mrhotshot.yaml').exists(): files.append(ROOT / 'compose.mrhotshot.yaml')
+if (ROOT / 'compose.solar.yaml').exists(): files.append(ROOT / 'compose.solar.yaml')
+services = {}
+networks = {}
+for file in files:
+    obj = yaml.safe_load(file.read_text())
+    assert isinstance(obj.get('services'), dict), file
+    for name, service in obj['services'].items():
+        assert name not in services, f'duplicate {name}'
+        services[name] = service
+    networks.update(obj.get('networks', {}))
+
+expected = {'level4', 'idmz', 'level3', 'level2', 'level1', 'level0', 'soc', 'web_dmz', 'wan_sim'}
+assert expected.issubset(networks), 'missing zone'
+cidrs = [ip_network(net['ipam']['config'][0]['subnet']) for net in networks.values()]
+for i, a in enumerate(cidrs):
+    for b in cidrs[i+1:]:
+        assert not a.overlaps(b), f'overlapping {a} / {b}'
+assert all(networks[name].get('internal', False) for name in expected), 'Internet isolation missing'
+allowed_multi = {'field-conduit', 'control-conduit', 'supervisory-conduit', 'historian-conduit',
+                 'soc-conduit', 'jump-entry', 'it-access', 'web-entry', 'solar-field-conduit', 'solar-ppc-conduit', 'solar-supervisory-conduit', 'solar-historian-conduit', 'solar-it-access'}
+for name, service in services.items():
+    ns = service.get('networks', [])
+    ns = set(ns.keys()) if isinstance(ns, dict) else set(ns)
+    assert len(ns) >= 1, f'{name} without networks'
+    assert not (len(ns) > 1 and name not in allowed_multi), f'unexpected dual-homed service {name}'
+    assert 'otlab' not in ns, f'bypass backbone on {name}'
+    assert not (('level4' in ns) and ('level1' in ns)), f'unsafe L4-to-L1 {name}'
+    assert not (('level4' in ns) and ('level3' in ns)), f'unsafe L4-to-L3 {name}'
+    assert not ('/var/run/docker.sock' in str(service)), f'docker socket in {name}'
+    for pub in service.get('ports', []) or []:
+        assert str(pub).startswith('127.0.0.1:'), f'non-loopback published port: {name} -> {pub}'
+
+if 'plc-heating' in services:
+    assert {'plc-water', 'plc-heating', 'sis', 'fuxa'}.issubset(services)
+    assert 'ports' not in services['plc-heating']
+    assert services['fuxa']['networks'] == ['level2']
+assert services['dc01']['networks']['level4']['ipv4_address'] == '10.0.0.10'
+assert services['ics-dc01']['networks']['level3']['ipv4_address'] == '172.18.10.10'
 assert services['it-access']['environment']['HISTORIAN_URL'].startswith('http://historian-conduit')
-if 'fuxa' in services:
-    assert {'plc-heating','plc-power','control-conduit','public-publisher','public-ops','public-case-conduit'}.issubset(services)
-    assert services['fuxa']['networks']==['level2']
-print('[PASS] %d services; 9 isolated zones; 4 live array/inverter chains + transformer/relay/dispatch/field-service/public/maintenance; 0 direct L4->OT networks.'%len(services))
+assert {'solar-physics','solar-inverter-01','solar-inverter-02','solar-inverter-03','solar-inverter-04','solar-ppc','solar-scada','solar-historian','solar-it-access'}.issubset(services)
+assert services['solar-physics']['networks']['level0']['ipv4_address'] == '192.168.96.50'
+assert services['solar-ppc']['networks'] == ['level1']
+assert services['solar-scada']['networks'] == ['level2']
+assert services['solar-it-access']['networks'] == ['level4', 'idmz']
+print(f'[PASS] {len(services)} services, {len(expected)} isolated zones, 0 generic routers, loopback-only publications.')

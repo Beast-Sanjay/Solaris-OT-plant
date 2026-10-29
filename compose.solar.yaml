@@ -1,0 +1,121 @@
+# Additive functional solar-plant digital-twin simulator over Purdue 0..4.
+# docker compose -f compose.yaml -f compose.solar.yaml up -d --build
+x-solar-python: &solar
+  image: python:3.12-slim
+  working_dir: /app
+  volumes: ["./solar:/app:ro"]
+  restart: unless-stopped
+x-relay-python: &relay
+  image: python:3.12-slim
+  working_dir: /app
+  volumes: ["./services:/app:ro"]
+  restart: unless-stopped
+  sysctls: ["net.ipv4.ip_forward=0"]
+services:
+  solar-physics:
+    <<: *solar
+    command: ["python", "-u", "physics.py"]
+    networks: {level0: {ipv4_address: 192.168.96.50}}
+    environment: {PORT: "8080"}
+  solar-field-conduit:
+    <<: *relay
+    command: ["python", "-u", "http_relay.py"]
+    environment:
+      LISTEN_PORT: "8080"
+      TARGET_URL: http://solar-physics:8080
+      ALLOWED_PATHS: /api/state,/api/command
+      ALLOWED_METHODS: GET,POST
+    networks: [level0, level1]
+    depends_on: [solar-physics]
+  solar-inverter-01: &inverter
+    <<: *solar
+    command: ["python", "-u", "inverter.py"]
+    environment: {INVERTER_ID: INV-01, FIELD_URL: "http://solar-field-conduit:8080", MODBUS_PORT: "502"}
+    networks: [level1]
+    depends_on: [solar-field-conduit]
+  solar-inverter-02:
+    <<: *inverter
+    environment: {INVERTER_ID: INV-02, FIELD_URL: "http://solar-field-conduit:8080", MODBUS_PORT: "502"}
+  solar-inverter-03:
+    <<: *inverter
+    environment: {INVERTER_ID: INV-03, FIELD_URL: "http://solar-field-conduit:8080", MODBUS_PORT: "502"}
+  solar-inverter-04:
+    <<: *inverter
+    environment: {INVERTER_ID: INV-04, FIELD_URL: "http://solar-field-conduit:8080", MODBUS_PORT: "502"}
+  solar-protection-relay:
+    <<: *solar
+    command: ["python", "-u", "protection.py"]
+    environment: {FIELD_URL: "http://solar-field-conduit:8080"}
+    networks: [level1]
+    depends_on: [solar-field-conduit]
+  solar-ppc:
+    <<: *solar
+    command: ["python", "-u", "ppc.py"]
+    environment:
+      FIELD_URL: http://solar-field-conduit:8080
+      INVERTER_HOSTS: solar-inverter-01,solar-inverter-02,solar-inverter-03,solar-inverter-04
+      PORT: "8080"
+    networks: [level1]
+    depends_on: [solar-inverter-01,solar-inverter-02,solar-inverter-03,solar-inverter-04]
+  solar-ppc-conduit:
+    <<: *relay
+    command: ["python", "-u", "http_relay.py"]
+    environment:
+      LISTEN_PORT: "8080"
+      TARGET_URL: http://solar-ppc:8080
+      ALLOWED_PATHS: /api/state,/api/command
+      ALLOWED_METHODS: GET,POST
+    networks: [level1, level2]
+    depends_on: [solar-ppc]
+  solar-scada:
+    <<: *solar
+    command: ["python", "-u", "scada.py"]
+    environment: {PPC_URL: "http://solar-ppc-conduit:8080", PORT: "8080"}
+    networks: [level2]
+    depends_on: [solar-ppc-conduit]
+    ports: ["127.0.0.1:1883:8080"]
+  solar-supervisory-conduit:
+    <<: *relay
+    command: ["python", "-u", "http_relay.py"]
+    environment:
+      LISTEN_PORT: "8080"
+      TARGET_URL: http://solar-scada:8080
+      ALLOWED_PATHS: /api/state
+      ALLOWED_METHODS: GET
+    networks: [level2, level3]
+    depends_on: [solar-scada]
+  solar-historian:
+    <<: *solar
+    command: ["python", "-u", "historian.py"]
+    environment:
+      POLL_URL: http://solar-supervisory-conduit:8080/api/state
+      SOC_URL: http://soc-conduit:8080/api/events
+      DB_PATH: /data/solar.sqlite3
+      PORT: "8080"
+    volumes: ["./solar:/app:ro", "solar_historian_data:/data"]
+    networks: [level3]
+    depends_on: [solar-supervisory-conduit]
+  solar-historian-conduit:
+    <<: *relay
+    command: ["python", "-u", "http_relay.py"]
+    environment:
+      LISTEN_PORT: "8080"
+      TARGET_URL: http://solar-historian:8080
+      ALLOWED_PATHS: /api/latest,/api/history
+      ALLOWED_METHODS: GET
+    networks: [level3, idmz]
+    depends_on: [solar-historian]
+  solar-it-access:
+    build: {context: ., dockerfile: services/Dockerfile.gateway}
+    sysctls: ["net.ipv4.ip_forward=0"]
+    environment:
+      AD_HOST: dc01
+      AD_DOMAIN: corp.otlab.test
+      HISTORIAN_URL: http://solar-historian-conduit:8080
+      PORT: "8080"
+    networks: [level4, idmz]
+    depends_on: [dc01, solar-historian-conduit]
+    ports: ["127.0.0.1:18084:8080"]
+    restart: unless-stopped
+volumes:
+  solar_historian_data: {}

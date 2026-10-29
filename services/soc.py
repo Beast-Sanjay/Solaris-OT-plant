@@ -3,13 +3,11 @@ import json
 import os
 import sqlite3
 import time
-from pathlib import Path
 from http.server import ThreadingHTTPServer
 from urllib.request import Request, urlopen
 from urllib.parse import urlsplit
 from common import JSONHandler, send_json, read_json
 DB = os.getenv('DB_PATH', '/data/soc.sqlite3')
-SOC_HTML = Path(__file__).with_name('solar_ui').joinpath('soc.html').read_bytes()
 
 
 def init():
@@ -19,13 +17,7 @@ def init():
 
 class Handler(JSONHandler):
     def do_GET(self):
-        path = urlsplit(self.path).path
-        if path == '/':
-            self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8')
-            self.send_header('Content-Length',str(len(SOC_HTML))); self.end_headers();self.wfile.write(SOC_HTML)
-            return
-        if path not in ('/api/events','/health'):return send_json(self,404,{'error':'not_found'})
-        if path == '/health':return send_json(self,200,{'ok':True,'role':'SOC event collector'})
+        if urlsplit(self.path).path not in ('/api/events', '/'): return send_json(self, 404, {'error': 'not_found'})
         with sqlite3.connect(DB) as db:
             results = [json.loads(v[0]) for v in db.execute('select event_json from events order by id desc limit 100')]
         send_json(self, 200, {'events': results, 'note': 'Lightweight collector. Connect external Malcolm/Elastic separately.'})

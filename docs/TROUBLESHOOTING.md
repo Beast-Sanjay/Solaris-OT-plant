@@ -1,59 +1,65 @@
-# Solar Lab troubleshooting
+# Troubleshooting and deployment acceptance checks
 
-Run `./scripts/check_lab.sh` after containers start; it checks the actual device paths without sending control commands.
+These steps run on the **Linux VM where Docker Engine is installed**, not in the package authoring sandbox.
 
-## Start commands
+## Before building
 
-```bash
-./scripts/setup.sh
-./scripts/up.sh
-docker compose ps
-docker compose logs --tail=100 ppc-01 scada inverter-01 feeder-33kv historian
-```
+1. Check `docker compose version` and `docker info`.
+2. `python3 scripts/init_env.py`, `python3 scripts/validate.py`, and `python3 scripts/host_preflight.py`.
+3. Verify `/mnt/data` or other Docker volumes are on a filesystem supporting POSIX ACL and security xattrs. Samba AD domain-controller provisioning sometimes requires extra privileges/capabilities on nested Docker/Proxmox storage; the two DCs use `cap_add: SYS_ADMIN` but are **not privileged** by default.
+4. Ensure images can be pulled: `python:3.12-slim`, `debian:bookworm-slim`, `postgres:16-alpine`, `nginx:1.27-alpine`. Optional Elastic 8.17.0 images require access to `docker.elastic.co`.
+5. Do not run the original mrhOTshOT stack simultaneously: it publishes some of the same host ports and uses incompatible flat networking.
 
-The first start requires Docker image pulls; there is no Docker daemon in the package-building environment, so full Compose startup remains unverified there.
-
-## Missing PV telemetry / SCADA shows offline
-
-- `docker compose logs met-station pv-array-01 inverter-01 inverter-conduit-01 ppc-01 scada` shows the whole flow.
-- In Compose, `met-station` and PV blocks share only **level0**. The inverter can query the PV field only through `array-conduit-01` (L0↔L1).
-- PPC queries each inverter through its matching `inverter-conduit-*` (L1↔L2), over both native Modbus and JSON.
-- Run `docker compose exec -T ppc-01 python -c "from urllib.request import urlopen; print(urlopen('http://inverter-conduit-01:8080/api/state').read()[:200])"`.
-- Check the Docker network IP ranges for overlap with existing Proxmox bridges or VPN routes.
-
-## Feeder export reads zero
-
-Check if `feeder.breaker_closed` is `false` or `export_limit_pct` is zero in `http://127.0.0.1:1882/api/state`. In this model an open feeder commands **zero inverter AC output**. Use the SCADA operator controls and `.env` token to close the breaker or adjust the limit.
-
-## Operator dispatch says unauthorized
-
-`grep '^CONTROL_TOKEN=' .env` to find the token. Enter it using **Operator access token** in the SCADA interface. A token is created on first setup and is never silently rotated. This is local training authorization, not production RBAC.
-
-## AD never becomes ready
+## Compose validation (mandatory before trusting a deployment)
 
 ```bash
-docker compose logs --tail=120 dc01 ics-dc01
-docker compose exec dc01 samba-tool user show analyst
-docker compose exec ics-dc01 samba-tool user show icsoperator
+docker compose -f compose.yaml config >/tmp/purdue-rendered-compose.yaml
+# full mode only:
+docker compose -f compose.yaml -f compose.mrhotshot.yaml config >/tmp/purdue-full-rendered-compose.yaml
 ```
 
-Existing Samba volumes can retain previously provisioned realm or password state; do not delete volumes if you need to preserve domain objects. Samba provisioning may require xattrs and appropriate Linux volume handling. Keep the DC IPs static.
-
-## DB01 maintenance page empty
+Check `docker compose ps` and logs after startup:
 
 ```bash
-./scripts/migrate_db.sh
-docker compose logs db01 corp-portal
-curl -s http://127.0.0.1:18082/api/workorders
+docker compose logs --tail=100 dc01 ics-dc01 it-access plc-demo scada historian
+docker compose exec dc01 samba-tool domain level show
+docker compose exec ics-dc01 samba-tool domain level show
+docker compose exec it-workstation dig @10.0.0.10 _ldap._tcp.corp.otlab.test SRV +short
 ```
 
-## Need original protocol targets and FUXA
+## Samba AD fails provisioning or LDAP returns 401
+
+- Look for DNS bind errors on port 53, missing filesystem xattr/ACL support, Samba security ACL set failures, or wrong static IP.
+- Samba first provisioning of `/var/lib/samba/private/sam.ldb` must complete successfully. If it fails halfway, stop the stack and troubleshoot; do not blindly delete DC volumes unless you want to start a **new** domain.
+- AD domain users are created **once**, during initial provisioning. Editing `.env` after the first boot does not rotate passwords or re-create accounts. To rotate, use `samba-tool user setpassword analyst` inside dc01 and adjust clients.
+- `it-access` uses LDAPS 636 with an unverified locally generated Samba certificate; ensure Samba is listening on 636 (check `ss -lntp` inside the DC if available). The gateway currently suppresses specific bind errors and returns HTTP 401. For controlled debugging, test authentication with LDAP tools from an IT-zone container.
+- Samba stores its certificate and realm configuration in its data volume. A production deployment must verify the CA chain; this training lab intentionally does not.
+- Some host filesystems and rootless Docker configurations cannot run Samba AD ACLs reliably. For production use a real Windows Server AD VM or a separately validated Samba VM.
+
+## FUXA missing targets after full install
+
+The legacy FUXA seed file expects `plc-heating` on Modbus TCP/502. In strict mode, `plc-heating` is a DNS alias **inside Level 2** pointing at `control-conduit`, while the real Level 1 PLC also has `plc-heating-l1` alias for the conduit. Check:
 
 ```bash
-sudo apt-get install -y git python3-yaml
-./scripts/setup.sh --full
-./scripts/up.sh --full
-./scripts/check_lab.sh --full
+docker compose -f compose.yaml -f compose.mrhotshot.yaml ps
+# Only FUXA is on Level 2; the original target is on Level 1.
+# Once services are ready, seed the FUXA UI:
+(cd upstream && python3 scripts/seed_fuxa_hmi.py --wait)
 ```
 
-The original HMI shows **heating and substation** operations, not Solar PV. Only the new port `1882` UI displays the solar plant. Upstream Caldera and dashboard are deliberately not enabled in strict-mode Purdue design.
+All original PLC services retain their original protocol ports inside Level 1, but host-port publication is removed. A scenario written for the original dashboard/Caldera/flat network **will not necessarily work** in strict mode. Don't restore the shared `otlab` bridge: it would defeat the intended topology.
+
+## Connection policy testing
+
+`it-access` is an HTTP gateway: it validates credentials against the corporate AD domain; the only proxied routes are `/api/latest` and `/api/history`. An attempt to send `POST` to the historian through this gateway is not supported. The historian has no direct Level 4 network interface, and the workstation cannot resolve Level 1 service names via the Level 4 Docker DNS. For a higher-assurance audit, inspect every container's network membership with:
+
+```bash
+docker inspect "$(docker compose ps -q it-access)" --format '{{json .NetworkSettings.Networks}}'
+docker inspect "$(docker compose ps -q plc-demo)" --format '{{json .NetworkSettings.Networks}}'
+```
+
+No Docker bridge automatically guarantees that packets from an unrelated external interface are blocked: verify host firewalling and that the Docker daemon is not configured to permit direct routed inter-bridge access. `internal: true` plus app-level gateways is an architectural baseline, not a validated industrial firewall appliance.
+
+## Package regression tests
+
+`python3 scripts/validate.py` checks static topology and published ports; `python3 -m unittest discover -s tests -v` checks Modbus framing and generated upstream overlay conventions; `python3 scripts/smoke_local.py` performs a local end-to-end L0/L1/L2/L3/SOC pipeline run. It does not prove Kerberos, Samba, full Docker startup or real firewall isolation.

@@ -1,0 +1,22 @@
+digraph Solar {
+  graph [rankdir=TB,bgcolor="#0a1020",fontname="Arial",pad="0.4",nodesep="0.3",ranksep="0.62",label="SOLAR PLANT DIGITAL TWIN — Purdue OT/IT Lab",labelloc=t,fontcolor="#eaf1ff",fontsize=22];
+  node [shape=box,style="rounded,filled",fillcolor="#18263e",color="#41627b",fontcolor="#eaf1ff",fontname="Arial",fontsize=11,margin="0.15,0.10"];
+  edge [color="#54c8ce",fontcolor="#bbcfe1",fontsize=10,penwidth=1.5,arrowsize=0.7];
+  subgraph cluster_l4 {label="LEVEL 4  •  Enterprise IT    10.0.0.0/24";color="#5770c1";fontcolor="#adbffe";style="rounded,dashed";ad [label="DC01\nSamba Active Directory"]; user [label="Analyst / IT workstation"]; access [label="AD-gated historian access\nRead only"]; user -> access [label="HTTP Basic"]; access -> ad [label="LDAPS",style=dotted];}
+  subgraph cluster_idmz {label="LEVEL 3.5  •  Industrial DMZ    10.7.7.0/24";color="#8d69c4";fontcolor="#cfc1f5";hist_gate [label="Historian proxy\nGET only"];}
+  subgraph cluster_l3 {label="LEVEL 3  •  Operations    172.18.10.0/24";color="#72a6b1";fontcolor="#bcdae7";historian [label="Solar historian\nSQLite time-series"];icsdc [label="ICS-DC01\nIndependent OT AD"];
+  }
+  subgraph cluster_l2 {label="LEVEL 2  •  SCADA    172.18.20.0/24";color="#5d9d90";fontcolor="#aeeadb";scada [label="Solar SCADA HMI\nLive mimic + controls"];}
+  subgraph cluster_l1 {label="LEVEL 1  •  Control    192.168.95.0/24";color="#c5a05b";fontcolor="#efcb8d";ppc [label="Power Plant Controller\n100 MW setpoint"];inv [label="4 independent Modbus TCP\n25 MW inverters each"];rel [label="Grid protection relay\n47 Hz trip simulation"];
+  }
+  subgraph cluster_l0 {label="LEVEL 0  •  Process    192.168.96.0/24";color="#d27e73";fontcolor="#f8bdab";phy [label="Single physics state\nPV arrays · weather · transformer\nPCC breaker · feeder power"];
+  }
+  access -> hist_gate [label="AD verified read-only"];
+  hist_gate -> historian [label="GET latest/history"];
+  historian -> scada [dir=back,label="GET telemetry"];
+  scada -> ppc [label="Conduit: commands and status"];
+  ppc -> inv [label="Modbus FC03 / FC06"];
+  inv -> phy [label="Actuation + telemetry\nthrough L0/L1 conduit"];
+  ppc -> phy [label="Weather/grid scenario\nthrough L0/L1 conduit"];
+  rel -> phy [label="Protection trip"];
+}

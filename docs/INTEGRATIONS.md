@@ -1,56 +1,43 @@
-# Integrations — SOLARIS ONE
+# SOC / asset discovery / original mrhOTshOT integrations
 
-## Network zones
+## Original mrhOTshOT
 
-All nine internal Docker networks are intentionally isolated. The solar plant uses explicit cross-zone read-only and write-limited conduits. L4 has no direct route to L1; enterprise users can request historical data only via the AD-authenticated IDMZ API gateway.
+The upstream repository (`AsherDLL/mrhOTshOT_Docker_pub`) has a flat `otlab` management backbone plus `it-net`, `ot-net`, and `mgmt-net`, with original FUXA, Caldera, attack dashboard and router. In strict mode the adapter remaps original protocol targets and SIS to our `level1`, and FUXA to `level2`, without publishing industrial protocol ports on the host. The universal backbone, Caldera agent, attack runner, and deliberately vulnerable original router are **not brought into this deployment**.
 
-## Active Directory
+Adapter code: `scripts/integrate_upstream.py`. It reads `upstream/docker/docker-compose.yml` on the Docker host and writes `compose.mrhotshot.yaml`. It does not edit original upstream files. The original HMI seed script must be run from the `upstream` directory. Change the mode to an isolated legacy lab VM if you need the original attack-scenario experience; do not make the strict network flat just to make old scenarios work.
 
-Samba DC `dc01` represents CORP IT, with a separate Samba DC `ics-dc01` for operations. They are **not domain-joined to each other** and do not have a forest trust. The corporate analyst can access only the historian gateway (read-only):
+## Sensor visibility: Zeek, Suricata, Malcolm
 
-```bash
-set -a; source .env; set +a
-curl -u "analyst:$CORP_AD_ANALYST_PASSWORD" \
-  http://127.0.0.1:18080/api/devices/latest
-```
+An isolated `soc` Docker bridge alone provides **no SPAN/TAP**. A container connected to the SOC bridge does not see unrelated packets across the L1/L2/DMZ bridges. For realistic passive OT monitoring, mirror bridge-side veth packets to a capture interface or use host-network AF_PACKET on the correct Docker bridge interfaces. Use `docker network inspect` and Linux `ip link` to identify bridge interfaces (names are not guaranteed stable). Avoid generating duplicate alert streams when observing both ingress and egress of the same cross-zone flow.
 
-This Basic-authentication test gateway is loopback-only, and is not production TLS/PKI hardened.
+Suggested passive observation coverage for ASTRICS:
 
-## OPC / FUXA / original mrhOTshOT targets
+- L1 `plc-*` and `sis` process communications (industrial Modbus, IEC104, DNP3, BACnet, OPC UA, S7, etc. as exposed by upstream).
+- L2 -> L1 `control-conduit` (source and destination with unmodified Modbus TCP payloads).
+- Level 4 -> Industrial DMZ `it-access` HTTPS would be appropriate in a hardened lab; the current gateway uses localhost HTTP Basic and LDAP over LDAPS.
+- Level 3 historian, `soc-conduit` and authentication-audit events.
 
-Optional `./scripts/setup.sh --full && ./scripts/up.sh --full` clones the upstream repository and adds its original 11 protocol targets, SIS, and FUXA in an *independent legacy protocol demonstration annex*. FUXA's two existing views are a district-heating and substation demo; they are **not** representations of the solar plant. The new solar SCADA at port 1882 displays the 10 MW PV process.
+For a passive application event feed, the L3 historian's threshold alert calls `POST http://soc-conduit:8080/api/events`, which is sent through a dedicated Level3+SOC HTTP-only gateway. SOC collector persists events in SQLite and (when the optional elastic service exists) forwards events to `purdue-events` in Elasticsearch. This **is not a complete IDS**, and the current SOC collector has no network-packet analyzer.
 
-The original mrhOTshOT console and Caldera agent use a shared management network and are not deployed in strict Purdue mode. Their deployment would bypass the segmentation assumptions. To obtain native SunSpec-certified simulation, IEC 61850/IEC 104 power-plant operations, and a full engineering power-flow model, further implementations are required.
+### Malcolm
 
-## SOC and threat detection
+Malcolm can be deployed on **a separate, sufficiently large monitoring VM**, per its upstream hardware and licensing requirements. It is intentionally not embedded or auto-downloaded here. Route mirrored packets/pcaps to Malcolm's own ingest path, or export structured events to a pipeline that can ingest them. Do not connect Malcolm's management plane to Level 1/0 as a general network gateway. The original repo has a Suricata sensor option (`make sensor-up`), but its `otlab`/`it-net` assumptions differ from our strict bridges; reconfigure capture interfaces before reuse.
 
-The historian posts inverter outages and feeder-open alarms through an application-limited conduit to `soc-collector`. Optional Elasticsearch and Kibana use `docker compose --profile elastic ...`; no automatic Zeek/Suri packet tap is included. Use a packet mirroring setup on the lab VM for passive security monitoring.
+## Modbus register map: `plc-demo:15020` inside L1
 
-## Sample APIs
+FC03/04 reads (0-based holding-register offsets):
 
-```bash
-# Plant + inverter state
-curl http://127.0.0.1:1882/api/state
-# Corporate IT app
-curl http://127.0.0.1:18082/api/workorders
-# AD-authenticated, read-only historian data
-curl -u "analyst:$CORP_AD_ANALYST_PASSWORD" http://127.0.0.1:18080/api/plant/history?limit=10
-# Token-protected simulated PPC setpoint (0-100%); use your local .env token
-curl -H "X-Lab-Control-Token: $CONTROL_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"export_limit_pct":60}' http://127.0.0.1:1882/api/control
-```
+| Offset | Meaning | Encoding |
+| --- | --- | --- |
+| 0 | Tank level | percent ×10, unsigned 16-bit |
+| 1 | Pump running | 0/1 |
+| 2 | Flow | L/min ×10 |
+| 3 | Temperature | Celsius ×10 |
+| 4 | Pump setpoint | percent, 10–90 |
+| 5 | Field communication healthy | 0/1 |
 
-Do not attach these simulator APIs to operating inverters or grid protection equipment.
+FC06 write allowed only to offset 4 (setpoint). This demo provides **no physical process control**. The Level 2 SCADA uses FC03 and does not issue writes. Writes are available for authorized simulation from Level 1 or the designated Level 2 conduit.
 
+## Production migration checklist
 
-### Windows guests using dockur/windows (v4)
-
-Opt-in Windows 11 / Windows Server guests are provided in `compose.windows.yaml`.
-They run QEMU/KVM Windows VMs inside Docker containers, **not native Windows
-containers**. Corporate guests use the `level4` network and Samba `dc01`; OT
-engineering uses `level3` and `ics-dc01`. Domain joins are manual to avoid
-placing AD administrator passwords in the container environment. Each guest
-requires KVM and a locally staged ISO because zone networks are internal.
-
-See [WINDOWS_DOCKUR.md](WINDOWS_DOCKUR.md) for full deployment, Windows
-PowerShell onboarding, DNS/LDAP/Kerberos verification, and security boundaries.
+Before using any of these patterns beyond a fenced-off cyber lab: replace application relays with stateful industrial firewalls and flow enforcement, build actual IT/OT identity federation (if needed) with least privilege, use validated TLS/PKI for LDAPS and HTTP, implement logs for all denied flows and authentication attempts, enforce MFA on jump/brokers, retain packets with proper privacy controls, pin and verify upstream commits/images, and independently test fail-closed behaviour on conduit failure.

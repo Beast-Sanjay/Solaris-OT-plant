@@ -41,10 +41,8 @@ def read_modbus():
 try:
     with tempfile.TemporaryDirectory() as tmp:
         launch('field.py', PORT=39001)
-        launch('field.py', PORT=39005, INITIAL_LEVEL=73, FILL_RATE=0.95, DRAIN_RATE=0.35)
         launch('plc.py', FIELD_URL='http://127.0.0.1:39001', MODBUS_PORT=15020)
-        launch('plc.py', FIELD_URL='http://127.0.0.1:39005', MODBUS_PORT=15021, INITIAL_SETPOINT=35)
-        launch('scada.py', MODBUS_HOST='127.0.0.1', MODBUS_PORT=15020, DEVICE_ENDPOINTS='plc-demo=127.0.0.1:15020,plc-secondary=127.0.0.1:15021', PORT=39002)
+        launch('scada.py', MODBUS_HOST='127.0.0.1', MODBUS_PORT=15020, PORT=39002)
         launch('soc.py', PORT=39004, DB_PATH=Path(tmp)/'soc.db', SOC_ELASTIC_URL='http://127.0.0.1:39999')
         launch('historian.py', POLL_URL='http://127.0.0.1:39002/api/state',
                SOC_URL='http://127.0.0.1:39004/api/events', DB_PATH=Path(tmp)/'hist.db', PORT=39003)
@@ -57,9 +55,7 @@ try:
                 scada = get_json('http://127.0.0.1:39002/api/state')
                 hist = get_json('http://127.0.0.1:39003/api/latest')
                 soc = get_json('http://127.0.0.1:39004/api/events')
-                multi = get_json('http://127.0.0.1:39003/api/devices/latest')
-                if (scada['connected'] and hist['sample'] and len(multi['devices']) == 2 and
-                    all(d['connected'] and d['values'].get('field_connected') for d in scada['devices'].values())):
+                if scada['connected'] and hist['sample']:
                     assert 'pump' in field and scada['values']['field_connected']
                     assert 0 <= hist['sample']['level_pct'] <= 100
                     success = True
@@ -68,20 +64,13 @@ try:
                 pass
             time.sleep(1)
         assert success, 'pipeline failed to deliver an L0 sample to historian within deadline'
-        print('[PASS] Two L0 process models -> two Modbus PLCs -> L2 SCADA -> L3 per-device historian; SOC API reachable.')
+        print('[PASS] L0 sensor -> L1 Modbus -> L2 SCADA -> L3 historian; SOC API reachable.')
         # Verify a real Modbus setpoint write and read round-trip.
         with socket.create_connection(('127.0.0.1', 15020), timeout=2) as c:
             c.sendall(struct.pack('!HHHBBHH', 2, 0, 6, 1, 6, 4, 60))
             reply = c.recv(64)
         assert reply[7:12] == struct.pack('!BHH', 6, 4, 60), reply
         print('[PASS] Modbus FC06 setpoint write returns expected response.')
-        # Independent secondary setpoint should not mutate primary.
-        with socket.create_connection(('127.0.0.1',15021),timeout=2) as c:
-            c.sendall(struct.pack('!HHHBBHH',3,0,6,1,6,4,45))
-            secondary=c.recv(64)
-        assert secondary[7:12] == struct.pack('!BHH',6,4,45)
-        assert scada['devices']['plc-secondary']['values']['level_pct'] >= 0
-        print('[PASS] Secondary PLC accepts independent register write.')
 finally:
     for p in reversed(PROCS):
         p.terminate()

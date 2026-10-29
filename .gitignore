@@ -3,6 +3,3 @@ upstream/
 __pycache__/
 *.pyc
 *.zip
-windows-data/
-windows-media/*.iso
-windows-media/*.ISO

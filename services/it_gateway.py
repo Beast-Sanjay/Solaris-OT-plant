@@ -37,7 +37,7 @@ def verify(username, password):
 class Handler(JSONHandler):
     def do_GET(self):
         route = urlsplit(self.path)
-        if route.path not in ('/api/latest', '/api/history', '/api/devices/latest', '/api/devices/history', '/api/plant/latest', '/api/plant/history'):
+        if route.path not in ('/api/latest', '/api/history'):
             return send_json(self, 404, {'error': 'not_found'})
         auth = self.headers.get('Authorization', '')
         try:
